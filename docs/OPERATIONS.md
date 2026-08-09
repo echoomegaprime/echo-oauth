@@ -6,7 +6,7 @@ Non-secret settings are `ECHO_GITHUB_OAUTH_CLIENT_ID`, `ECHO_GITHUB_OAUTH_CALLBA
 
 Secret settings are file paths: `ECHO_GITHUB_OAUTH_CLIENT_SECRET_FILE`, `ECHO_GITHUB_OAUTH_STATE_KEY_FILE`, and `ECHO_GITHUB_OAUTH_SESSION_KEY_FILE`. The process rejects the corresponding direct secret environment variables. Use independent random state and session keys and protect the files for the service identity only.
 
-Register the exact public callback `https://echo-op.com/auth/github/callback`; do not use wildcard callbacks. The managed tunnel exposes only the fixed `/auth/github/*` gateway aliases on the apex domain.
+Register the exact public callback `https://github.echo-op.com/oauth/callback`; do not use wildcard callbacks. The managed tunnel exposes the OAuth runtime through the dedicated `github.echo-op.com` gateway hostname.
 
 ## Staging gate
 

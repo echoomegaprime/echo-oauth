@@ -40,7 +40,7 @@ def test_state_rejects_open_redirect_targets(tmp_path: Path, return_to: str) -> 
 def test_authorization_url_contains_exact_registered_identity_and_state() -> None:
     url = build_authorize_url(
         client_id="Ov23exampleclientid",
-        redirect_uri="https://echo-op.com/auth/github/callback",
+        redirect_uri="https://github.echo-op.com/oauth/callback",
         state="opaque-state",
         scopes=("read:user", "user:email"),
     )
@@ -50,7 +50,7 @@ def test_authorization_url_contains_exact_registered_identity_and_state() -> Non
     assert query == {
         "allow_signup": ["false"],
         "client_id": ["Ov23exampleclientid"],
-        "redirect_uri": ["https://echo-op.com/auth/github/callback"],
+        "redirect_uri": ["https://github.echo-op.com/oauth/callback"],
         "scope": ["read:user user:email"],
         "state": ["opaque-state"],
     }
@@ -65,7 +65,7 @@ def test_http_callback_rejects_state_mismatch_before_token_exchange(tmp_path: Pa
 
     app = create_app(
         client_id="Ov23exampleclientid",
-        redirect_uri="https://echo-op.com/auth/github/callback",
+        redirect_uri="https://github.echo-op.com/oauth/callback",
         state_store=OAuthStateStore(tmp_path / "oauth.sqlite3", signing_key="s" * 64),
         exchange_code=exchange,
     )
@@ -84,7 +84,7 @@ def test_http_start_and_callback_complete_once_without_exposing_token(tmp_path: 
 
     app = create_app(
         client_id="Ov23exampleclientid",
-        redirect_uri="https://echo-op.com/auth/github/callback",
+        redirect_uri="https://github.echo-op.com/oauth/callback",
         state_store=store,
         exchange_code=exchange,
     )
@@ -150,7 +150,7 @@ def test_github_exchange_uses_registered_callback_and_returns_only_identity() ->
         client = GitHubOAuthClient(
             client_id="Ov23exampleclientid",
             client_secret="client-secret",
-            redirect_uri="https://echo-op.com/auth/github/callback",
+            redirect_uri="https://github.echo-op.com/oauth/callback",
             web_base=base,
             api_base=base,
         )
@@ -162,5 +162,5 @@ def test_github_exchange_uses_registered_callback_and_returns_only_identity() ->
 
     assert identity == {"login": "echoomegaprime"}
     assert observed[0][0] == "/login/oauth/access_token"
-    assert "redirect_uri=https%3A%2F%2Fecho-op.com%2Fauth%2Fgithub%2Fcallback" in observed[0][1]
+    assert "redirect_uri=https%3A%2F%2Fgithub.echo-op.com%2Foauth%2Fcallback" in observed[0][1]
     assert observed[1] == ("/user", "Bearer dummy-access-token")
