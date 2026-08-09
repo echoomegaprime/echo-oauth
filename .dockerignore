@@ -1,0 +1,9 @@
+.git
+.github
+.pytest_cache
+.pytest_tmp*
+.venv
+tests
+.env*
+*.sqlite*
+var
