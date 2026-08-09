@@ -88,15 +88,29 @@ def test_http_start_and_callback_complete_once_without_exposing_token(tmp_path: 
         state_store=store,
         exchange_code=exchange,
     )
-    with TestClient(app) as client:
+    with TestClient(app, base_url="https://oauth.github.echo-op.com") as client:
         start = client.get("/oauth/start", params={"return_to": "/command-center"}, follow_redirects=False)
         state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
-        callback = client.get("/oauth/callback", params={"code": "temporary-code", "state": state})
-        replay = client.get("/oauth/callback", params={"code": "temporary-code", "state": state})
+        callback = client.get(
+            "/oauth/callback",
+            params={"code": "temporary-code", "state": state},
+            follow_redirects=False,
+        )
+        replay = client.get(
+            "/oauth/callback",
+            params={"code": "temporary-code", "state": state},
+            follow_redirects=False,
+        )
+        session = client.get("/session")
         health = client.get("/health")
     assert start.status_code == 307
-    assert callback.status_code == 200
-    assert callback.json() == {"status": "authorized", "login": "echoomegaprime", "return_to": "/command-center"}
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "/command-center"
+    assert session.json() == {
+        "authenticated": True,
+        "provider": "github",
+        "login": "echoomegaprime",
+    }
     assert "must-not-leak" not in callback.text
     assert replay.status_code == 400
     assert health.headers["x-content-type-options"] == "nosniff"

@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Callable, Mapping
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi import Cookie, FastAPI, HTTPException
+from fastapi.responses import JSONResponse, RedirectResponse
 
 
 _SECURITY_HEADERS = {
@@ -192,6 +192,108 @@ class OAuthStateStore:
         return return_to
 
 
+class SessionStore:
+    """Revocable HMAC-authenticated browser sessions; no provider token is retained."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        signing_key: str,
+        ttl_seconds: int = 7 * 24 * 60 * 60,
+    ) -> None:
+        if len(signing_key.encode()) < 32:
+            raise ValueError("session signing key must contain at least 32 bytes")
+        if not 300 <= ttl_seconds <= 30 * 24 * 60 * 60:
+            raise ValueError("session ttl must be between five minutes and thirty days")
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.signing_key = signing_key.encode()
+        self.ttl_seconds = ttl_seconds
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS oauth_sessions (
+                    nonce TEXT PRIMARY KEY,
+                    login TEXT NOT NULL,
+                    issued_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    revoked_at INTEGER
+                )
+                """
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=10)
+        connection.execute("PRAGMA busy_timeout=10000")
+        return connection
+
+    def issue(self, login: str, *, now: int | None = None) -> str:
+        if not isinstance(login, str) or not login or len(login) > 255:
+            raise ValueError("invalid GitHub login")
+        issued = int(time.time() if now is None else now)
+        expires = issued + self.ttl_seconds
+        nonce = secrets.token_urlsafe(24)
+        payload = json.dumps(
+            {"exp": expires, "iat": issued, "login": login, "nonce": nonce},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        encoded = _b64url(payload)
+        signature = _b64url(
+            hmac.new(self.signing_key, encoded.encode(), hashlib.sha256).digest()
+        )
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO oauth_sessions(nonce,login,issued_at,expires_at,revoked_at) "
+                "VALUES(?,?,?,?,NULL)",
+                (nonce, login, issued, expires),
+            )
+        return encoded + "." + signature
+
+    def _decode_verified(self, token: str, *, now: int | None = None) -> dict[str, object]:
+        try:
+            encoded, supplied = token.split(".", 1)
+        except (AttributeError, ValueError) as exc:
+            raise ValueError("invalid session signature") from exc
+        expected = _b64url(
+            hmac.new(self.signing_key, encoded.encode(), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(expected, supplied):
+            raise ValueError("invalid session signature")
+        try:
+            payload = json.loads(_b64url_decode(encoded))
+            nonce = str(payload["nonce"])
+            login = str(payload["login"])
+            expires = int(payload["exp"])
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid session payload") from exc
+        current = int(time.time() if now is None else now)
+        if expires <= current:
+            raise ValueError("session expired")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT login,expires_at,revoked_at FROM oauth_sessions WHERE nonce=?",
+                (nonce,),
+            ).fetchone()
+        if row is None or row[2] is not None or row[0] != login or int(row[1]) != expires:
+            raise ValueError("session revoked or unknown")
+        return {"nonce": nonce, "login": login, "exp": expires}
+
+    def validate(self, token: str, *, now: int | None = None) -> str:
+        return str(self._decode_verified(token, now=now)["login"])
+
+    def revoke(self, token: str, *, now: int | None = None) -> bool:
+        payload = self._decode_verified(token, now=now)
+        current = int(time.time() if now is None else now)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE oauth_sessions SET revoked_at=? WHERE nonce=? AND revoked_at IS NULL",
+                (current, payload["nonce"]),
+            )
+        return cursor.rowcount == 1
+
+
 def build_authorize_url(
     *,
     client_id: str,
@@ -219,9 +321,13 @@ def create_app(
     redirect_uri: str,
     state_store: OAuthStateStore,
     exchange_code: Callable[[str], Mapping[str, str]],
+    session_store: SessionStore | None = None,
 ) -> FastAPI:
     """Build the public OAuth boundary with state validation before exchange."""
 
+    if session_store is None:
+        derived_key = hashlib.sha256(state_store.signing_key + b"/echo-session").hexdigest()
+        session_store = SessionStore(state_store.path, signing_key=derived_key)
     app = FastAPI(title="ECHO OAuth", docs_url=None, redoc_url=None)
 
     @app.middleware("http")
@@ -246,7 +352,7 @@ def create_app(
         )
 
     @app.get("/oauth/callback")
-    async def oauth_callback(code: str, state: str) -> dict[str, str]:
+    async def oauth_callback(code: str, state: str) -> RedirectResponse:
         try:
             return_to = state_store.consume(state)
         except ValueError as exc:
@@ -258,6 +364,50 @@ def create_app(
         login = identity.get("login")
         if not isinstance(login, str) or not login:
             raise HTTPException(status_code=502, detail="GitHub identity response was invalid")
-        return {"status": "authorized", "login": login, "return_to": return_to}
+        session = session_store.issue(login)
+        response = RedirectResponse(return_to, status_code=303)
+        response.set_cookie(
+            "echo_session",
+            session,
+            max_age=session_store.ttl_seconds,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/session")
+    async def session_status(
+        echo_session: str | None = Cookie(default=None),
+    ) -> dict[str, object]:
+        if not echo_session:
+            return {"authenticated": False, "provider": "github"}
+        try:
+            login = session_store.validate(echo_session)
+        except ValueError:
+            return {"authenticated": False, "provider": "github"}
+        return {"authenticated": True, "provider": "github", "login": login}
+
+    @app.post("/logout")
+    async def logout(
+        echo_session: str | None = Cookie(default=None),
+    ) -> JSONResponse:
+        if echo_session:
+            try:
+                session_store.revoke(echo_session)
+            except ValueError:
+                pass
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(
+            "echo_session",
+            path="/",
+            httponly=True,
+            secure=True,
+            samesite="lax",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     return app

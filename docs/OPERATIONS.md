@@ -1,7 +1,15 @@
 # Operations
 
-Provide the client ID, client secret, and state-signing key through a secret manager. Keep the SQLite state database on persistent storage so replay detection survives ordinary restarts. Register the exact callback URL; do not use wildcard callbacks.
+## Configuration
 
-Before deployment, run tests and compilation, boot a staging container with non-production credentials, check `/health`, and exercise start plus callback failure paths. Production promotion requires an authorization-code exchange against GitHub and identity verification without logging the code or token.
+Non-secret settings are `ECHO_GITHUB_OAUTH_CLIENT_ID`, `ECHO_GITHUB_OAUTH_CALLBACK_URL`, `ECHO_GITHUB_OAUTH_STATE_DB`, and `ECHO_GITHUB_OAUTH_SESSION_DB`. The databases must live on persistent storage so state replay fences, active sessions, and revocation survive restarts.
 
-Rotate the client secret and state key in a controlled window. Rotating the state key invalidates outstanding authorizations by design; users can safely restart the flow.
+Secret settings are file paths: `ECHO_GITHUB_OAUTH_CLIENT_SECRET_FILE`, `ECHO_GITHUB_OAUTH_STATE_KEY_FILE`, and `ECHO_GITHUB_OAUTH_SESSION_KEY_FILE`. The process rejects the corresponding direct secret environment variables. Use independent random state and session keys and protect the files for the service identity only.
+
+Register the exact public callback `https://github.echo-op.com/oauth/callback`; do not use wildcard callbacks.
+
+## Staging gate
+
+Run the full test suite and compilation, boot the exact revision on a staging port with separate databases, and verify health, open-redirect rejection, expired/replayed state, secure cookie attributes, session validation, logout revocation, and absence of provider tokens from responses and both databases. Complete one real GitHub authorization-code exchange against the production callback before promotion without logging the code or token.
+
+Rotate the client secret and signing keys in a controlled window. Rotating the state key invalidates outstanding authorizations; rotating the session key invalidates active cookies. Both fail closed and users can safely restart authorization.
