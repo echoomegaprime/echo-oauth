@@ -15,7 +15,7 @@ A narrow, production-oriented GitHub OAuth boundary for ECHO applications. It cr
 - Client, state, and session secrets are loaded from protected files; direct secret environment variables fail startup.
 - Missing credentials fail startup closed.
 
-Production entrypoint: `https://github.echo-op.com/oauth/start`. Session state is available at `GET /session`; `POST /logout` revokes the durable session and clears the cookie.
+Production entrypoint: `https://echo-op.com/auth/github/start`. The exact registered callback is `https://echo-op.com/auth/github/callback`; same-origin session state is available at `GET /auth/github/session`, and `POST /auth/github/logout` revokes the durable session and clears the cookie.
 
 ## Verify locally
 
